@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f3a5f">
+<title>회의 녹음·전사</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#1c2330;--mute:#6b7585;--line:#e1e5eb;--pri:#1f3a5f;--rec:#d93636;--ok:#1d8a4e;--warn:#b7791f}
+@media(prefers-color-scheme:dark){:root{--bg:#10141b;--card:#1a212c;--fg:#e8ecf2;--mute:#8d98a8;--line:#2a3340;--pri:#6ea0e6;--rec:#ff6464;--ok:#4cc982;--warn:#e6b455}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 -apple-system,"Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;padding:env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom))}
+main{max-width:720px;margin:0 auto}
+h1{font-size:20px;margin:18px 0 12px;display:flex;justify-content:space-between;align-items:center}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+button{font:inherit;border:0;border-radius:10px;padding:10px 16px;background:var(--pri);color:#fff;cursor:pointer}
+button.sec{background:transparent;color:var(--fg);border:1px solid var(--line)}
+button:disabled{opacity:.5}
+input,select{font:inherit;width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
+.big{display:flex;flex-direction:column;align-items:center;gap:10px;padding:22px 16px}
+#timer{font-size:44px;font-variant-numeric:tabular-nums;font-weight:600}
+#recbtn{width:92px;height:92px;border-radius:50%;background:var(--rec);font-size:15px;font-weight:600}
+#recbtn.on{border-radius:20px}
+.meter{width:100%;height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+#lvl{height:100%;width:0;background:var(--ok);transition:width .1s}
+.banner{padding:10px 12px;border-radius:10px;font-size:14px;margin-top:8px;display:none}
+.banner.warn{display:block;background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.banner.err{display:block;background:color-mix(in srgb,var(--rec) 15%,transparent);color:var(--rec)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pill{font-size:12px;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mute)}
+.pill.ok{color:var(--ok);border-color:var(--ok)}
+.pill.bad{color:var(--rec);border-color:var(--rec)}
+.sess h3{margin:0 0 4px;font-size:16px}
+.sess small{color:var(--mute)}
+pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border-radius:8px;padding:10px;font:14px/1.6 inherit;max-height:320px;overflow:auto;margin:8px 0}
+details summary{cursor:pointer;color:var(--mute);font-size:14px}
+.hint{font-size:13px;color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+<h1>회의 녹음·전사 <span id="authpill" class="pill bad">Drive 미연결</span></h1>
+
+<div class="card big">
+  <div id="timer">00:00:00</div>
+  <div class="meter"><div id="lvl"></div></div>
+  <button id="recbtn">녹음 시작</button>
+  <input id="title" placeholder="제목 (선택) 예: 연구데이터 주간회의" style="max-width:420px">
+  <div id="status" class="hint">대기 중</div>
+  <div id="banner" class="banner"></div>
+</div>
+
+<div class="card">
+  <div class="row"><strong>음성 파일 전사</strong><span class="hint">mp3·m4a·wav·mp4 등 → 녹취록 (원본도 Drive에 저장)</span></div>
+  <div class="row" style="margin-top:8px">
+    <button id="filebtn" class="sec">파일 선택해서 전사</button>
+    <input id="fileinp" type="file" accept="audio/*,video/mp4,video/webm,.m4a,.mp3,.wav,.aac,.ogg,.flac,.mp4,.webm" hidden>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row"><strong>Google Drive</strong><span id="drivestate" class="hint"></span></div>
+  <div class="row" style="margin-top:8px">
+    <button id="loginbtn">Google 로그인</button>
+    <button id="logoutbtn" class="sec">로그아웃</button>
+    <span id="queue" class="hint"></span>
+  </div>
+</div>
+
+<div class="card">
+  <details id="settings">
+    <summary>설정 (처음 1회)</summary>
+    <label>Google OAuth 클라이언트 ID</label>
+    <input id="s_client" placeholder="xxxx.apps.googleusercontent.com">
+    <label>Drive 폴더 이름</label>
+    <input id="s_folder" placeholder="회의녹음">
+    <label>전사 방식</label>
+    <select id="s_engine">
+      <option value="groq">Groq Whisper API (무료 키, 한국어 정확·빠름, 폰·PC 모두, 화자 구분 없음)</option>
+      <option value="gemini">Gemini API (무료 키, 화자 구분, 호출 제한 주의)</option>
+      <option value="whisper">브라우저 내 Whisper (완전 무료·오프라인, 화자 구분 없음, PC 권장)</option>
+      <option value="none">전사 안 함 (녹음만)</option>
+    </select>
+    <label>Groq API 키 (console.groq.com 에서 무료 발급)</label>
+    <input id="s_gkey" type="password" placeholder="gsk_...">
+    <label>Groq 모델명</label>
+    <input id="s_gmodel" placeholder="whisper-large-v3-turbo">
+    <label>Gemini API 키 (aistudio.google.com 에서 무료 발급)</label>
+    <input id="s_key" type="password" placeholder="AIza...">
+    <label>Gemini 모델명</label>
+    <input id="s_model" placeholder="gemini-2.5-flash">
+    <label>자동 분할 간격 (분) — 짧을수록 Drive에 자주 저장됨</label>
+    <input id="s_rot" type="number" min="1" max="10" value="5">
+    <div class="row" style="margin-top:12px"><button id="savesettings">저장</button></div>
+    <p class="hint">설정과 키는 이 기기의 브라우저에만 저장됩니다.</p>
+  </details>
+</div>
+
+<h1 style="font-size:17px">기록</h1>
+<div id="sessions"></div>
+</main>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="app.js"></script>
+</body>
+</html>

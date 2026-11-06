@@ -1,0 +1,9 @@
+{
+  "name": "회의 녹음·전사",
+  "short_name": "녹음·전사",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#1f3a5f",
+  "theme_color": "#1f3a5f",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
