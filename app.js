@@ -11,19 +11,19 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 /* ---------- 설정 ---------- */
-const DEF = { client: '', folder: '회의녹음', engine: 'groq', key: '', model: 'gemini-2.5-flash', gkey: '', gmodel: 'whisper-large-v3-turbo', rot: 5 };
+const DEF = { client: '', folder: '회의녹음', engine: 'groq', key: '', model: 'gemini-2.5-flash', gkey: '', gmodel: 'whisper-large-v3', hint: '', rot: 5 };
 let cfg = { ...DEF };
 try { cfg = { ...DEF, ...JSON.parse(localStorage.getItem('vr_cfg') || '{}') }; } catch (e) {}
 function loadSettingsUI() {
   $('s_client').value = cfg.client; $('s_folder').value = cfg.folder; $('s_engine').value = cfg.engine;
   $('s_key').value = cfg.key; $('s_model').value = cfg.model; $('s_rot').value = cfg.rot;
-  $('s_gkey').value = cfg.gkey; $('s_gmodel').value = cfg.gmodel;
+  $('s_gkey').value = cfg.gkey; $('s_gmodel').value = cfg.gmodel; $('s_hint').value = cfg.hint;
 }
 $('savesettings').onclick = () => {
   cfg = {
     client: $('s_client').value.trim(), folder: $('s_folder').value.trim() || DEF.folder, engine: $('s_engine').value,
     key: $('s_key').value.trim(), model: $('s_model').value.trim() || DEF.model,
-    gkey: $('s_gkey').value.trim(), gmodel: $('s_gmodel').value.trim() || DEF.gmodel,
+    gkey: $('s_gkey').value.trim(), gmodel: $('s_gmodel').value.trim() || DEF.gmodel, hint: $('s_hint').value.trim(),
     rot: Math.min(10, Math.max(1, parseInt($('s_rot').value) || 5)),
   };
   try { localStorage.setItem('vr_cfg', JSON.stringify(cfg)); } catch (e) {}
@@ -82,7 +82,7 @@ function pickMime() {
 const extOf = m => /mp4|m4a/.test(m) ? 'm4a' : /ogg/.test(m) ? 'ogg' : /mpeg|mp3/.test(m) ? 'mp3' : /wav/.test(m) ? 'wav' : /flac/.test(m) ? 'flac' : /aac/.test(m) ? 'aac' : 'webm';
 
 async function acquire() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } });   // 노이즈 억제는 먼 목소리를 깎아 전사 정확도를 떨어뜨림
   R.stream = stream; R.track = stream.getAudioTracks()[0];
   R.track.onended = () => handleInterruption('ended');
   R.track.onmute = () => { if (!R.interrupted && !R.muted) { R.muted = true; R.muteStart = Date.now(); banner('warn', '마이크가 잠시 다른 앱(전화 등)에 넘어갔습니다. 돌아오면 이어집니다.'); } };
@@ -104,7 +104,7 @@ function meterTick() {
 
 function beginSegment() {
   const seg = ++R.seg;
-  const opts = { audioBitsPerSecond: 32000 }; if (R.mime) opts.mimeType = R.mime;
+  const opts = { audioBitsPerSecond: 64000 }; if (R.mime) opts.mimeType = R.mime;
   const rec = new MediaRecorder(R.stream, opts);
   const c = { rec, seg, startedAt: Date.now(), pending: [], mime: rec.mimeType || R.mime || 'audio/webm' };
   rec.ondataavailable = e => { if (e.data && e.data.size) c.pending.push(addChunk({ sid: R.sess.sid, seg, t: Date.now(), blob: e.data }).catch(log)); };
@@ -311,6 +311,12 @@ async function decode16k(blob) {
   const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
   return (await off.startRendering()).getChannelData(0);
 }
+function normalizeVolume(pcm) {
+  let sum = 0, n = 0; for (let i = 0; i < pcm.length; i += 7) { sum += pcm[i] * pcm[i]; n++; }
+  const rms = Math.sqrt(sum / Math.max(1, n)); if (!rms) return;
+  const gain = Math.min(8, 0.08 / rms); if (gain < 1.2) return;
+  for (let i = 0; i < pcm.length; i++) { const v = pcm[i] * gain; pcm[i] = v > 1 ? 1 : v < -1 ? -1 : v; }
+}
 function toWav(f32) {
   const b = new ArrayBuffer(44 + f32.length * 2), v = new DataView(b);
   const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
@@ -348,13 +354,15 @@ async function transcribeGroq(g, prevTail) {
   fd.append('language', 'ko');
   fd.append('temperature', '0');
   fd.append('response_format', 'verbose_json');
-  fd.append('prompt', ('회의 녹음입니다. ' + (prevTail || '')).slice(-200));
+  // 직전 전사문을 prompt로 넘기면 반복 환각이 번지기 쉬워서, 사용자가 적은 용어 힌트만 사용
+  fd.append('prompt', ('회의 녹음입니다. ' + (cfg.hint ? '용어: ' + cfg.hint : '')).slice(0, 220));
   const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method: 'POST', headers: { Authorization: 'Bearer ' + cfg.gkey }, body: fd });
   if (r.status === 429) throw new Error('Groq 무료 한도에 도달했습니다. 잠시 후 자동 재시도합니다');
   if (!r.ok) throw new Error('Groq 오류 ' + r.status + ' ' + (await r.text()).slice(0, 160));
   const j = await r.json();
   // 무음 구간에서 Whisper가 지어내는 문장(환각) 제거
-  const parts = (j.segments || []).filter(s => !(s.no_speech_prob > 0.7)).map(s => s.text.trim()).filter(Boolean);
+  // 무음 환각 + 같은 말이 반복되는 구간(compression_ratio 높음) 제거
+  const parts = (j.segments || []).filter(s => !(s.no_speech_prob > 0.7) && !(s.compression_ratio > 2.4)).map(s => s.text.trim()).filter(Boolean);
   const t = (j.segments ? parts.join(' ') : (j.text || '')).trim();
   return t || '(음성 없음)';
 }
@@ -495,6 +503,7 @@ async function importFile(f) {
   let slices = [], dur = 0;
   try {
     const pcm = await decode16k(f); dur = pcm.length / 16000 * 1000;
+    normalizeVolume(pcm);   // 작게 녹음된(멀리서 녹음한) 파일의 음량을 키워 인식률 개선
     const step = Math.round((cfg.engine === 'gemini' ? Math.min(cfg.rot, 6) : cfg.rot) * 60 * 16000);
     for (let o = 0, i = 1; o < pcm.length; o += step, i++) slices.push({ i, off: o / 16000 * 1000, blob: toWav(pcm.subarray(o, Math.min(pcm.length, o + step))) });
   } catch (err) {
